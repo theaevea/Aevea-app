@@ -400,7 +400,7 @@ export class MockDevice {
     this.recallLog.push(recallId);
     this.emit('RECALL_STATUS', { recall_id: recallId, status: 1, path: ENUM.path.LTE_M });
   }
-  private fix(requestId: number, source = 1) {
+  fix(requestId: number, source = 1) {
     const p = this.position();
     this.posCount++;
     const t = this.nowUnix() || Math.floor(Date.now() / 1000);
