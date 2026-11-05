@@ -1,0 +1,233 @@
+openapi: 3.0.3
+info:
+  title: Aevea Cloud API
+  version: 0.1.0
+  description: |
+    Scaffold API for Aevea Torus/Link/app. Auth is a STUB (HS256 JWT). Roles: user (app), device (Link/Torus), admin (x-admin-key).
+    Lost Mode commands reach Link on its LTE-M eDRX wake (~80 s); see docs/lost-mode-relay.md.
+servers: [{ url: https://api.theaevea.com }, { url: http://localhost:8080 }]
+components:
+  securitySchemes:
+    user: { type: http, scheme: bearer, bearerFormat: JWT }
+    device: { type: http, scheme: bearer, bearerFormat: JWT }
+    admin: { type: apiKey, in: header, name: x-admin-key }
+  schemas:
+    Error: { type: object, properties: { error: { type: object, properties: { code: { type: string }, message: { type: string } } } } }
+    Device:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [torus, link] }
+        name: { type: string }
+        fw_version: { type: string }
+        lost_mode: { type: object, properties: { active: { type: boolean }, lost_id: { type: integer, nullable: true }, interval_s: { type: integer, nullable: true } } }
+    Command:
+      type: object
+      properties:
+        id: { type: string }
+        kind: { type: string, enum: [lost_mode, locate_now, recall] }
+        status: { type: string, enum: [queued, delivered, acked, rejected, expired, superseded] }
+        payload: { type: object }
+        created_at: { type: integer, description: ms epoch }
+        expires_at: { type: integer }
+        attempts: { type: integer }
+        expected_delivery_s: { type: integer, example: 80 }
+    Position:
+      type: object
+      required: [ts, lat, lon]
+      properties:
+        seq: { type: integer }
+        ts: { type: integer, description: unix seconds }
+        lat: { type: number }
+        lon: { type: number }
+        acc_m: { type: number }
+        source: { type: string }
+        sats: { type: integer }
+        batt_pct: { type: integer }
+        lost_id: { type: integer }
+    FirmwareRelease:
+      type: object
+      properties:
+        id: { type: string }
+        device_kind: { type: string }
+        image_type: { type: integer, enum: [0, 1, 2] }
+        version: { type: string, example: 0.3.2+120 }
+        security_counter: { type: integer }
+        size: { type: integer }
+        sha256: { type: string }
+        signature: { type: string, description: base64 ECDSA P-256 r||s (64 bytes) }
+        signer_key_id: { type: string }
+        signature_verified_by_cloud: { type: boolean }
+        download_url: { type: string }
+    PublicPet:
+      type: object
+      properties:
+        name: { type: string }
+        species: { type: string }
+        breed: { type: string }
+        colour: { type: string }
+        size: { type: string }
+        notes: { type: string }
+        medical_alert: { type: string }
+        owner_first_name: { type: string }
+        photo_url: { type: string }
+        reported_lost: { type: boolean }
+        tap_verified: { type: boolean }
+  responses:
+    Err: { description: Error, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+paths:
+  /healthz: { get: { responses: { '200': { description: ok } } } }
+  /v1/auth/token:
+    post:
+      summary: STUB - mint a user token for an email (disabled when AUTH_STUB=false)
+      requestBody: { content: { application/json: { schema: { type: object, required: [email], properties: { email: { type: string } } } } } }
+      responses: { '200': { description: token }, '429': { $ref: '#/components/responses/Err' } }
+  /v1/admin/devices:
+    post:
+      summary: Factory provisioning. Returns device token.
+      security: [{ admin: [] }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [device_id, kind, claim_code], properties: { device_id: { type: string }, kind: { type: string, enum: [torus, link] }, claim_code: { type: string, minLength: 8 }, hw_rev: { type: string } } } } } }
+      responses: { '201': { description: created }, '409': { $ref: '#/components/responses/Err' } }
+  /v1/devices/claim:
+    post:
+      summary: Claim a device with its packaging claim code
+      security: [{ user: [] }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [device_id, claim_code], properties: { device_id: { type: string }, claim_code: { type: string }, name: { type: string } } } } } }
+      responses: { '201': { description: claimed, content: { application/json: { schema: { $ref: '#/components/schemas/Device' } } } }, '403': { $ref: '#/components/responses/Err' }, '409': { $ref: '#/components/responses/Err' } }
+  /v1/devices:
+    get: { summary: List my devices, security: [{ user: [] }], responses: { '200': { description: ok } } }
+  /v1/devices/{id}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get: { security: [{ user: [] }], responses: { '200': { description: ok }, '404': { $ref: '#/components/responses/Err' } } }
+    patch: { summary: Rename, security: [{ user: [] }], responses: { '200': { description: ok } } }
+  /v1/devices/{id}/owner:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    delete: { summary: Unclaim and erase device data, security: [{ user: [] }], responses: { '204': { description: done } } }
+  /v1/devices/{id}/data:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    delete: { summary: Erase device data, keep ownership, security: [{ user: [] }], responses: { '204': { description: done } } }
+  /v1/device/info:
+    put: { summary: Device reports fw_version / hw_rev, security: [{ device: [] }], responses: { '200': { description: ok } } }
+  /v1/devices/{id}/lost-mode:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    post:
+      summary: Queue Lost Mode on/off for Link (delivered on next eDRX wake, ~80 s)
+      security: [{ user: [] }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [active], properties: { active: { type: boolean }, interval_s: { type: integer, minimum: 15, maximum: 600, default: 15 } } } } } }
+      responses: { '202': { description: queued, content: { application/json: { schema: { $ref: '#/components/schemas/Command' } } } } }
+  /v1/devices/{id}/locate-now:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    post: { summary: Queue Locate now, security: [{ user: [] }], responses: { '202': { description: queued } } }
+  /v1/devices/{id}/recall:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    post: { summary: Recall Assist cloud fallback (TTL 90 s), security: [{ user: [] }], responses: { '202': { description: queued } } }
+  /v1/devices/{id}/commands:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get: { security: [{ user: [] }], responses: { '200': { description: last 50 commands } } }
+  /v1/devices/{id}/commands/{cid}:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: cid, in: path, required: true, schema: { type: string } }]
+    get: { security: [{ user: [] }], responses: { '200': { description: ok } } }
+  /v1/device/commands:
+    get: { summary: Link polls on eDRX wake (at-least-once), security: [{ device: [] }], responses: { '200': { description: pending commands } } }
+  /v1/device/commands/{cid}/ack:
+    parameters: [{ name: cid, in: path, required: true, schema: { type: string } }]
+    post:
+      security: [{ device: [] }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [status], properties: { status: { type: string, enum: [ok, rejected] }, result: { type: object } } } } } }
+      responses: { '200': { description: acked }, '409': { $ref: '#/components/responses/Err' } }
+  /v1/device/positions:
+    post:
+      summary: Ingest 1-100 position fixes
+      security: [{ device: [] }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [positions], properties: { positions: { type: array, items: { $ref: '#/components/schemas/Position' } } } } } } }
+      responses: { '202': { description: accepted } }
+  /v1/devices/{id}/positions:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get: { security: [{ user: [] }], parameters: [{ name: since_seq, in: query, schema: { type: integer } }, { name: limit, in: query, schema: { type: integer } }], responses: { '200': { description: ok } } }
+  /v1/devices/{id}/positions/latest:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get: { security: [{ user: [] }], responses: { '200': { description: ok }, '404': { $ref: '#/components/responses/Err' } } }
+  /v1/devices/{id}/stream:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }, { name: access_token, in: query, schema: { type: string }, description: For EventSource which cannot set headers }]
+    get:
+      summary: SSE live stream (events position, alert, lost_mode; Last-Event-ID replays positions)
+      security: [{ user: [] }]
+      responses: { '200': { description: text/event-stream, content: { text/event-stream: { schema: { type: string } } } } }
+  /v1/device/alerts:
+    post: { summary: Device raises an alert; triggers push (deduped 5 min per type), security: [{ device: [] }], responses: { '202': { description: accepted } } }
+  /v1/devices/{id}/alerts:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get: { security: [{ user: [] }], responses: { '200': { description: ok } } }
+  /v1/me/push-tokens:
+    put: { security: [{ user: [] }], responses: { '204': { description: ok } } }
+    delete: { security: [{ user: [] }], responses: { '204': { description: ok } } }
+  /v1/admin/firmware:
+    post: { summary: Publish a signed firmware release, security: [{ admin: [] }], responses: { '201': { description: created, content: { application/json: { schema: { $ref: '#/components/schemas/FirmwareRelease' } } } } } }
+  /v1/firmware/latest:
+    get:
+      security: [{ user: [] }, { device: [] }]
+      parameters:
+        - { name: device_kind, in: query, required: true, schema: { type: string, enum: [torus, link] } }
+        - { name: image_type, in: query, schema: { type: integer, default: 0 } }
+        - { name: current_version, in: query, schema: { type: string } }
+        - { name: security_counter, in: query, schema: { type: integer } }
+        - { name: channel, in: query, schema: { type: string, enum: [stable, beta] } }
+      responses: { '200': { description: update_available + release } }
+  /v1/firmware/{id}/download:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    get: { security: [{ user: [] }, { device: [] }], responses: { '200': { description: image bytes, content: { application/octet-stream: { schema: { type: string, format: binary } } } } } }
+  /v1/devices/{id}/trials:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    post: { summary: Upload trial log (needs trial_data consent), security: [{ user: [] }], responses: { '201': { description: stored }, '403': { $ref: '#/components/responses/Err' } } }
+    get: { security: [{ user: [] }], responses: { '200': { description: ok } } }
+  /v1/trials/export:
+    get:
+      security: [{ user: [] }]
+      parameters: [{ name: format, in: query, schema: { type: string, enum: [json, csv], default: json } }]
+      responses: { '200': { description: export } }
+  /v1/trials/{tid}:
+    parameters: [{ name: tid, in: path, required: true, schema: { type: string } }]
+    delete: { security: [{ user: [] }], responses: { '204': { description: deleted } } }
+  /v1/me/consents:
+    post: { summary: Record grant or withdrawal (append-only), security: [{ user: [] }], responses: { '201': { description: recorded } } }
+    get: { security: [{ user: [] }], responses: { '200': { description: current + history } } }
+  /v1/me/export:
+    get: { summary: UK GDPR Art 15/20 data export, security: [{ user: [] }], responses: { '200': { description: JSON } } }
+  /v1/me:
+    delete:
+      summary: UK GDPR Art 17 erasure
+      security: [{ user: [] }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [confirm], properties: { confirm: { type: string, enum: [DELETE] } } } } } }
+      responses: { '204': { description: erased } }
+  /v1/devices/{id}/pet:
+    parameters: [{ name: id, in: path, required: true, schema: { type: string } }]
+    put: { summary: Set public Pet ID profile (rejects phone/email), security: [{ user: [] }], responses: { '200': { description: slug + finder_url }, '422': { $ref: '#/components/responses/Err' } } }
+    get: { security: [{ user: [] }], responses: { '200': { description: ok } } }
+  /v1/admin/tags:
+    post: { summary: Register NTAG 424 DNA tag (uid + SDMFileReadKey), security: [{ admin: [] }], responses: { '201': { description: ok } } }
+  /t:
+    get:
+      summary: NFC tap URL. Verifies SDM (AES-CMAC + counter), redirects to /p/{slug}
+      parameters: [{ name: e, in: query, required: true, schema: { type: string, description: 32 hex PICCData } }, { name: c, in: query, required: true, schema: { type: string, description: 16 hex SDMMAC } }]
+      responses: { '302': { description: redirect to finder page; v=unverified on failure }, '404': { description: unknown tag } }
+  /p/{slug}:
+    get: { summary: Public finder page (static HTML), parameters: [{ name: slug, in: path, required: true, schema: { type: string } }], responses: { '200': { description: text/html } } }
+  /api/public/pets/{slug}:
+    get: { summary: Public dog details only, parameters: [{ name: slug, in: path, required: true, schema: { type: string } }], responses: { '200': { description: ok, content: { application/json: { schema: { $ref: '#/components/schemas/PublicPet' } } } } } }
+  /api/public/challenge:
+    get: { summary: Challenge stub (replace with Turnstile/hCaptcha), responses: { '200': { description: challenge_id + question } } }
+  /api/public/pets/{slug}/contact:
+    post:
+      summary: Aevea Secure Relay - finder message to owner. Rate limited (5/h/IP, 10/h/dog)
+      parameters: [{ name: slug, in: path, required: true, schema: { type: string } }]
+      requestBody: { content: { application/json: { schema: { type: object, required: [message, challenge_id, answer], properties: { message: { type: string, minLength: 3, maxLength: 500 }, challenge_id: { type: string }, answer: { type: integer }, tap_token: { type: string }, website: { type: string, description: honeypot - leave empty } } } } } }
+      responses: { '202': { description: accepted; returns reply_token }, '422': { $ref: '#/components/responses/Err' }, '429': { $ref: '#/components/responses/Err' } }
+  /api/public/relay/{token}:
+    get: { summary: Finder polls owner replies, parameters: [{ name: token, in: path, required: true, schema: { type: string } }], responses: { '200': { description: replies } } }
+  /v1/relay/messages:
+    get: { summary: Owner inbox, security: [{ user: [] }], responses: { '200': { description: ok } } }
+  /v1/relay/messages/{mid}/reply:
+    parameters: [{ name: mid, in: path, required: true, schema: { type: string } }]
+    post: { security: [{ user: [] }], responses: { '201': { description: ok } } }
+  /.well-known/apple-app-site-association: { get: { summary: Universal links + App Clip association, responses: { '200': { description: json } } } }
+  /.well-known/assetlinks.json: { get: { summary: Android App Links, responses: { '200': { description: json } } } }

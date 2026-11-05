@@ -1,0 +1,16 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["{{IOS_TEAM_ID}}.{{IOS_BUNDLE_ID}}"],
+        "components": [
+          { "/": "/p/*", "comment": "Pet ID finder pages" },
+          { "/": "/t", "?": { "e": "*", "c": "*" }, "comment": "NTAG 424 DNA tap URLs" }
+        ]
+      }
+    ]
+  },
+  "appclips": {
+    "apps": ["{{IOS_TEAM_ID}}.{{IOS_CLIP_BUNDLE_ID}}"]
+  }
+}
